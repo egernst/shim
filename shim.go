@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/moby/moby/pkg/term"
 	"github.com/sirupsen/logrus"
@@ -51,46 +52,30 @@ func newShim(ctx context.Context, addr, containerID, execID string) (*shim, erro
 }
 
 func (s *shim) proxyStdio(wg *sync.WaitGroup, terminal bool) {
-	// don't wait the copying of the stdin, because `io.Copy(inPipe, os.Stdin)`
-	// can't terminate when no input. todo: find a better way.
-	wg.Add(1)
-	if !terminal {
-		// In case it's not a terminal, we also need to get the output
-		// from stderr.
-		wg.Add(1)
-	}
-
 	inPipe, outPipe, errPipe := shimStdioPipe(s.ctx, s.agent, s.containerID, s.execID)
 	go func() {
-		_, err1 := io.Copy(inPipe, os.Stdin)
+		for {
+			io.Copy(inPipe, os.Stdin)
+		}
 		_, err2 := s.agent.CloseStdin(s.ctx, &pb.CloseStdinRequest{
 			ContainerId: s.containerID,
 			ExecId:      s.execID})
-		if err1 != nil {
-			logger().WithError(err1).Warn("copy stdin failed")
-		}
 		if err2 != nil {
 			logger().WithError(err2).Warn("close stdin failed")
 		}
 	}()
 
 	go func() {
-		_, err := io.Copy(os.Stdout, outPipe)
-		if err != nil {
-			logger().WithError(err).Info("copy stdout failed")
+		for {
+			io.Copy(os.Stdout, outPipe)
 		}
-
-		wg.Done()
 	}()
 
 	if !terminal {
 		go func() {
-			_, err := io.Copy(os.Stderr, errPipe)
-			if err != nil {
-				logger().WithError(err).Info("copy stderr failed")
+			for {
+				io.Copy(os.Stderr, errPipe)
 			}
-
-			wg.Done()
 		}()
 	}
 }
@@ -180,9 +165,20 @@ func (s *shim) wait() (int32, error) {
 	span, _ := trace(s.ctx, "wait")
 	defer span.Finish()
 
-	resp, err := s.agent.WaitProcess(s.ctx, &pb.WaitProcessRequest{
-		ContainerId: s.containerID,
-		ExecId:      s.execID})
+	var err error
+	var resp *pb.WaitProcessResponse
+
+	for i := 0; i <= 300; i++ {
+		resp, err = s.agent.WaitProcess(s.ctx, &pb.WaitProcessRequest{
+			ContainerId: s.containerID,
+			ExecId:      s.execID})
+		if err == nil {
+			break
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	if err != nil {
 		return 0, err
 	}

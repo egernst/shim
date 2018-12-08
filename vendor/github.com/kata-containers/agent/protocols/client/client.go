@@ -101,8 +101,6 @@ func NewAgentClient(ctx context.Context, sock string, enableYamux bool) (*AgentC
 
 	ctx, cancel := context.WithTimeout(ctx, defaultDialTimeout)
 	defer cancel()
-
-	time.Sleep(1 * time.Second)
 	conn, err := grpc.DialContext(ctx, grpcAddr, dialOpts...)
 	if err != nil {
 		return nil, err
